@@ -19,6 +19,14 @@ uint8_bsearch(const uint8_t *low, int n, uint8_t needle)
 static int
 bsearch_match(int32_t *table, int state, const uint8_t *input, int *offset, int len)
 {
+  for (int i = 0; i < len; ++i)
+  {
+    if (input[*offset] == ((uint8_t*)table)[3])
+      return 4;
+    *offset += 1;
+  }
+  return state;
+
   while (*offset < len && state > 0)
   {
     const void *pstate = (table + state);
