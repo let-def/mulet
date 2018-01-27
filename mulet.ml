@@ -41,7 +41,7 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
     val compl : t -> t
     val label : label -> t
 
-    val delta : sigma -> t -> t
+    val delta : sigma -> t -> label list * t
     val labels : t -> label list
     val classes : t -> SigmaSet.t
   end = struct
@@ -150,18 +150,33 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
       | Label _ -> true
 
     let delta x re =
-      let rec delta = function
-        | Set xs when Sigma.is_subset_of x xs -> epsilon
-        | Set _ | Epsilon -> empty
-        | Concat (r, s) when nullable r -> (delta r ^. s) |. delta s
-        | Concat (r, s)   -> (delta r ^. s)
-        | Closure r as rs -> (delta r ^. rs)
-        | Or (r, s)       -> (delta r |. delta s)
-        | And (r, s)      -> (delta r &. delta s)
-        | Not r           -> compl (delta r)
-        | Label _         -> empty
+      let rec delta acc = function
+        | Set xs when Sigma.is_subset_of x xs -> (acc, epsilon)
+        | Set _ | Epsilon -> (acc, empty)
+        | Concat (r, s) when nullable r ->
+          let acc, r' = delta acc r in
+          let acc, s' = delta acc s in
+          (acc, (r' ^. s) |. s')
+        | Concat (r, s)   ->
+          let acc, r' = delta acc r in
+          (acc, r' ^. s)
+        | Closure r as rs ->
+          let acc, r' = delta acc r in
+          (acc, r' ^. rs)
+        | Or (r, s)       ->
+          let acc, r' = delta acc r in
+          let acc, s' = delta acc s in
+          (acc, r' |. s')
+        | And (r, s)      ->
+          let acc, r' = delta acc r in
+          let acc, s' = delta acc s in
+          (acc, r' &. s')
+        | Not r           ->
+          let _, r' = delta [] r in
+          (acc, compl r')
+        | Label label         -> (label :: acc, empty)
       in
-      delta re
+      delta [] re
 
     let rec labels acc = function
       | Set _ | Epsilon -> acc
@@ -233,7 +248,9 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
     | [] -> dfa
     | x :: todo when DFA.mem x dfa -> make_dfa dfa todo
     | x :: todo ->
-      let class_delta sigma acc = (sigma, Re.delta sigma x) :: acc in
+      let class_delta sigma acc =
+        let labels = Re.delta sigma x
+        (sigma, ) :: acc in
       let transitions = SigmaSet.fold class_delta (Re.classes x) [] in
       let dfa = DFA.add x transitions dfa in
       let add_todo todo (_, vec) = vec :: todo in
