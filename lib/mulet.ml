@@ -80,7 +80,8 @@ module Make(Sigma : SIGMA) (Label : LABEL) = struct
           end
         | Closure x, Closure y -> compare x y
         | Not x, Not y -> compare x y
-        | _ -> compare_tags x y
+        | (Set _ | Epsilon | Concat _ | Closure _ | Or _ | And _ | Not _), _ ->
+          compare_tags x y
 
     type ord = Lt | Eq | Gt
 
