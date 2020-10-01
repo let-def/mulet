@@ -64,6 +64,8 @@ module Make(Sigma : SIGMA) (Label : LABEL) = struct
       | Not (Set x) -> Sigma.is_empty x
       | _ -> false
 
+    let compare_tags = compare
+
     let rec compare x y =
       if x == y then 0
       else match x, y with
@@ -78,7 +80,7 @@ module Make(Sigma : SIGMA) (Label : LABEL) = struct
           end
         | Closure x, Closure y -> compare x y
         | Not x, Not y -> compare x y
-        | _ -> Pervasives.compare x y
+        | _ -> compare_tags x y
 
     type ord = Lt | Eq | Gt
 
