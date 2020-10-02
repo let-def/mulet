@@ -9,9 +9,15 @@ module type SIGMA = sig
   val inter : t -> t -> t
 end
 
+module type MONOID = sig
+  type t
+  val empty : t
+  val append : t -> t -> t
+end
+
 module type LABEL = sig
   include Map.OrderedType
-  val merge : t -> t -> t
+  include MONOID with type t := t
 end
 
 module Make (Sigma : SIGMA) (Label : LABEL) : sig
@@ -27,6 +33,7 @@ module Make (Sigma : SIGMA) (Label : LABEL) : sig
       | Or of t * t
       | And of t * t
       | Not of t
+      | Label of label
     val compare : t -> t -> int
     val empty : t
     val is_empty : t -> bool
@@ -37,25 +44,20 @@ module Make (Sigma : SIGMA) (Label : LABEL) : sig
     val ( &. ) : t -> t -> t
     val ( |. ) : t -> t -> t
     val compl : t -> t
+    val label : label -> t
+    val get_label : t -> label
   end
 
-  module ReMap : Map.S with type key = Re.t
+  module DFA : Map.S with type key = Re.t
+  type transition = sigma * label * Re.t
+  type dfa = transition list DFA.t
 
-  module Vector : sig
-    type t = label ReMap.t
-    val delta : sigma -> label ReMap.t -> label ReMap.t
-    val is_final : 'a ReMap.t -> bool
-    val compare : label ReMap.t -> label ReMap.t -> int
-  end
-
-  module VecMap : Map.S with type key = Vector.t
-
-  type transitions = (sigma * label ReMap.t) list
-
-  val make_dfa : transitions VecMap.t -> Vector.t list -> transitions VecMap.t
+  val add_to_dfa : dfa -> Re.t list -> dfa
+  val make_dfa : Re.t -> dfa
 end
 
 module Chars : sig
   include SIGMA
+  val of_list : char list -> t
   val to_list : t -> char list
 end

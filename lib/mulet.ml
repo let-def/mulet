@@ -9,7 +9,18 @@ module type SIGMA = sig
   val inter : t -> t -> t
 end
 
-module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
+module type MONOID = sig
+  type t
+  val empty : t
+  val append : t -> t -> t
+end
+
+module type LABEL = sig
+  include Map.OrderedType
+  include MONOID with type t := t
+end
+
+module Make(Sigma : SIGMA) (Label : LABEL) = struct
 
   type sigma = Sigma.t
   type label = Label.t
@@ -28,7 +39,6 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
       | Label   of label
 
     val compare : t -> t -> int
-    val compare_modulo_labels : t -> t -> int
 
     val empty : t
     val is_empty : t -> bool
@@ -41,8 +51,8 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
     val compl : t -> t
     val label : label -> t
 
-    val delta : sigma -> t -> label list * t
-    val labels : t -> label list
+    val delta : sigma -> t -> label * t
+    val get_label : t -> label
     val classes : t -> SigmaSet.t
   end = struct
     type t =
@@ -117,10 +127,13 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
       if is_full a || is_full b then not_empty
       else if is_empty a then b
       else if is_empty b then a
-      else match ord a b with
-        | Lt -> Or (a, b)
-        | Eq -> a
-        | Gt -> Or (b, a)
+      else match a, b with
+        | Label la, Label lb -> Label (Label.append la lb)
+        | _ ->
+          match ord a b with
+          | Lt -> Or (a, b)
+          | Eq -> a
+          | Gt -> Or (b, a)
 
     let rec (|.) a b = match a with
       | Or (a0, a1) -> re_or a0 (a1 |. b)
@@ -130,6 +143,9 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
       if is_empty a || is_empty b then empty
       else match a, b with
         | Epsilon, x | x, Epsilon -> x
+        | Label la, Label lb -> Label (Label.append la lb)
+        | Label la, Concat (Label lb, c) ->
+          Concat (Label (Label.append la lb), c)
         | _ -> Concat (a, b)
 
     let rec (^.) a b = match a with
@@ -154,73 +170,52 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
       | Label _ -> true
 
     let delta x re =
-      let rec delta acc = function
-        | Set xs when Sigma.is_subset_of x xs -> (acc, epsilon)
-        | Set _ | Epsilon -> (acc, empty)
+      let labels = ref Label.empty in
+      let rec delta pos = function
+        | Set xs when Sigma.is_subset_of x xs -> epsilon
+        | Set _ | Epsilon -> empty
         | Concat (r, s) when nullable r ->
-          let acc, r' = delta acc r in
-          let acc, s' = delta acc s in
-          (acc, (r' ^. s) |. s')
+          let r' = delta pos r in
+          let s' = delta pos s in
+          ((r' ^. s) |. s')
         | Concat (r, s)   ->
-          let acc, r' = delta acc r in
-          (acc, r' ^. s)
+          let r' = delta pos r in
+          (r' ^. s)
         | Closure r as rs ->
-          let acc, r' = delta acc r in
-          (acc, r' ^. rs)
+          let r' = delta pos r in
+          (r' ^. rs)
         | Or (r, s)       ->
-          let acc, r' = delta acc r in
-          let acc, s' = delta acc s in
-          (acc, r' |. s')
+          let r' = delta pos r in
+          let s' = delta pos s in
+          (r' |. s')
         | And (r, s)      ->
-          let acc, r' = delta acc r in
-          let acc, s' = delta acc s in
-          (acc, r' &. s')
+          let r' = delta pos r in
+          let s' = delta pos s in
+          (r' &. s')
         | Not r           ->
-          let _, r' = delta [] r in
-          (acc, compl r')
-        | Label label         -> (label :: acc, empty)
+          let r' = delta false r in
+          compl r'
+        | Label label         ->
+          if pos then labels := Label.append label !labels;
+          empty
       in
-      delta [] re
+      let result = delta true re in
+      !labels, result
 
-    let rec labels acc = function
+    let rec get_label acc = function
       | Set _ | Epsilon -> acc
-      | Concat (r, s) when not (nullable r) ->
-        labels acc r
+      | Concat (r, _) when not (nullable r) ->
+        get_label acc r
       | Closure r ->
-        labels acc r
+        get_label acc r
       | Concat (r, s) | Or (r, s) | And (r, s) ->
-        labels (labels acc r) s
+        get_label (get_label acc r) s
       | Not _ -> acc
-      | Label label -> label :: acc
+      | Label label -> Label.append label acc
 
-    let labels re = labels [] re
+    let get_label re = get_label Label.empty re
 
     let label l = Label l
-
-    let rec compare_modulo_labels x y =
-      if x == y then 0
-      else match x, y with
-        | Set xs, Set ys -> Sigma.compare xs ys
-        | Epsilon, Epsilon -> 0
-        | Concat (x1, x2) , Concat (y1, y2) ->
-          begin match compare_modulo_labels x1 y1 with
-            | 0 when nullable x1 ->
-              compare_modulo_labels x2 y2
-            | 0 ->
-              compare x2 y2
-            | n -> n
-          end
-        | Or  (x1, x2) , Or  (y1, y2)
-        | And (x1, x2) , And (y1, y2) ->
-          begin match compare_modulo_labels x1 y1 with
-            | 0 -> compare_modulo_labels x2 y2
-            | n -> n
-          end
-        | Closure x, Closure y -> compare_modulo_labels x y
-        | Not x, Not y -> compare x y
-        | Label x, Label y -> Label.compare x y
-        | (Set _ | Epsilon | Concat _ | Or _ | And _ | Closure _ | Not _ | Label _), _ ->
-          compare_tags x y
 
     let c_inter xs ys =
       SigmaSet.fold (fun x acc ->
@@ -234,7 +229,7 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
     let rec classes = function
       | Epsilon | Label _ -> full
       | Set s -> SigmaSet.add (Sigma.compl s) (SigmaSet.singleton s)
-      | Concat (r, s) when not (nullable r) -> classes r
+      | Concat (r, _) when not (nullable r) -> classes r
       | Concat (r, s) | Or (r, s) | And (r, s) -> c_inter (classes r) (classes s)
       | Closure r -> classes r
       | Not r -> classes r
@@ -242,24 +237,27 @@ module Make(Sigma : SIGMA) (Label : Map.OrderedType) = struct
 
   module DFA = Map.Make(struct
       type t = Re.t
-      let compare = Re.compare_modulo_labels
+      let compare = Re.compare
     end)
 
-  type transition = sigma * Re.t
-  type dfa = transition DFA.t
+  type transition = sigma * label * Re.t
+  type dfa = transition list DFA.t
 
-  let rec make_dfa dfa = function
+  let rec add_to_dfa dfa = function
     | [] -> dfa
-    | x :: todo when DFA.mem x dfa -> make_dfa dfa todo
+    | x :: todo when DFA.mem x dfa -> add_to_dfa dfa todo
     | x :: todo ->
       let class_delta sigma acc =
-        let labels = Re.delta sigma x
-        (sigma, ) :: acc in
+        let labels, x' = Re.delta sigma x in
+        (sigma, labels, x') :: acc
+      in
       let transitions = SigmaSet.fold class_delta (Re.classes x) [] in
       let dfa = DFA.add x transitions dfa in
-      let add_todo todo (_, vec) = vec :: todo in
+      let add_todo todo (_, _, x') = x' :: todo in
       let todo = List.fold_left add_todo todo transitions in
-      make_dfa dfa todo
+      add_to_dfa dfa todo
+
+  let make_dfa re = add_to_dfa DFA.empty [re]
 end
 
 module Chars : sig
